@@ -33,6 +33,7 @@ from capacity_report import (
     MINIO_ENDPOINT,
     PRICING_PER_GB_MONTH,
     SECRET_KEY,
+    SNAPSHOT_LOG_PATH,
     estimate_monthly_cost,
     format_money,
     get_demo_buckets,
@@ -41,6 +42,7 @@ from capacity_report import (
     suggest_tier,
     summarize_buckets,
 )
+from capacity_report import record_snapshot as _write_snapshot_rows
 
 # One FastMCP instance = one MCP server. The name shows up in MCP client
 # UIs (e.g. Claude Desktop's tool/server list) so users can tell which
@@ -291,6 +293,45 @@ def find_savings(demo: bool = False) -> FindSavingsResult:
         "opportunities": opportunities,
         "total_monthly_savings_usd": round(total_savings, 2),
         "total_monthly_savings_display": format_money(total_savings),
+    }
+
+
+class SnapshotResult(TypedDict):
+    """The shape of record_snapshot()'s return value."""
+
+    mode: str
+    timestamp_utc: str
+    bucket_count: int
+    snapshot_path: str
+
+
+@mcp.tool()
+def record_snapshot(demo: bool = False) -> SnapshotResult:
+    """
+    Record a point-in-time snapshot of every bucket's size and object
+    count to the snapshot log (one CSV row per bucket, appended to
+    capacity_report.py's snapshot log file). Call this to build up a
+    history of bucket sizes over time.
+
+    A single snapshot can't show growth by itself -- it's only useful
+    once several snapshots have accumulated (e.g. one per day). Once
+    there's enough history, that log is what a future growth-projection
+    feature would read from.
+
+    Args:
+        demo: If True, record a snapshot of synthetic demo data instead
+            of connecting to a live MinIO server. Useful for trying out
+            the snapshot mechanism without a live server.
+    """
+    buckets = _get_buckets(demo)
+    mode = "demo" if demo else "live"
+    rows = _write_snapshot_rows(buckets, mode=mode)
+
+    return {
+        "mode": mode,
+        "timestamp_utc": rows[0]["timestamp_utc"] if rows else datetime.now(timezone.utc).isoformat(),
+        "bucket_count": len(rows),
+        "snapshot_path": SNAPSHOT_LOG_PATH,
     }
 
 

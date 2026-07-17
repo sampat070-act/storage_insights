@@ -5,3 +5,6 @@ venv/
 # Python bytecode cache - auto-generated, machine-specific.
 __pycache__/
 *.pyc
+
+# Snapshot log - local runtime data built up over repeated runs, not source.
+snapshots.csv

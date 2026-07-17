@@ -19,6 +19,9 @@ import os
 # argparse gives us the --demo command-line flag.
 import argparse
 
+# csv lets us append snapshot rows without hand-rolling comma escaping.
+import csv
+
 # Used to build/compare "last accessed" timestamps, both for the real
 # LastModified dates MinIO returns and for the synthetic demo dates.
 from datetime import datetime, timedelta, timezone
@@ -61,6 +64,20 @@ BYTES_PER_GB = 1_000_000_000
 # Bytes in one binary TB (TiB), used to build the synthetic demo sizes so
 # they match the units human_readable_size() displays (see that function).
 BYTES_PER_TB = 1024**4
+
+# --- Snapshot logging ----------------------------------------------------
+# Where periodic snapshots get appended, one CSV row per bucket per run.
+# A single snapshot only shows a moment in time; growth-trend analysis
+# needs a *series* of snapshots (e.g. one per day via cron) to fit a
+# trend against. Kept next to this script by default so behavior doesn't
+# depend on the caller's working directory; overridable via env var for
+# tests or custom deployments.
+SNAPSHOT_LOG_PATH = os.environ.get(
+    "SNAPSHOT_LOG_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshots.csv"),
+)
+
+SNAPSHOT_CSV_FIELDS = ["timestamp_utc", "mode", "bucket_name", "object_count", "total_bytes"]
 
 
 def suggest_tier(days_since_access):
@@ -212,6 +229,39 @@ def summarize_buckets(buckets):
     }
 
 
+def record_snapshot(buckets, mode, path=SNAPSHOT_LOG_PATH):
+    """
+    Append one CSV row per bucket to the snapshot log, capturing object
+    count and total size right now. Writes the header only if the file
+    doesn't exist yet, so repeated calls (e.g. a daily cron job) build up
+    one growing history file rather than overwriting it.
+
+    Returns the rows written, so callers (e.g. the MCP tool) can report
+    back what was recorded without re-reading the file.
+    """
+    timestamp = datetime.now(timezone.utc).isoformat()
+    file_exists = os.path.exists(path)
+
+    rows = [
+        {
+            "timestamp_utc": timestamp,
+            "mode": mode,
+            "bucket_name": bucket["name"],
+            "object_count": bucket["object_count"],
+            "total_bytes": bucket["total_bytes"],
+        }
+        for bucket in buckets
+    ]
+
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=SNAPSHOT_CSV_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(rows)
+
+    return rows
+
+
 def print_report(buckets, demo=False):
     """
     Print the full capacity/cost report for a list of buckets. This is
@@ -293,6 +343,15 @@ def main():
         action="store_true",
         help="Use synthetic demo data instead of connecting to MinIO.",
     )
+    parser.add_argument(
+        "--snapshot",
+        action="store_true",
+        help=(
+            "Append a snapshot of current bucket sizes to the snapshot "
+            "log (for tracking growth over time) instead of printing the "
+            "full report. Intended for a periodic cron job."
+        ),
+    )
     args = parser.parse_args()
 
     if args.demo:
@@ -309,7 +368,12 @@ def main():
         )
         buckets = get_live_buckets(s3)
 
-    print_report(buckets, demo=args.demo)
+    if args.snapshot:
+        mode = "demo" if args.demo else "live"
+        rows = record_snapshot(buckets, mode=mode)
+        print(f"Recorded snapshot for {len(rows)} bucket(s) ({mode} mode) to {SNAPSHOT_LOG_PATH}")
+    else:
+        print_report(buckets, demo=args.demo)
 
 
 # This check means main() only runs when the script is executed directly
