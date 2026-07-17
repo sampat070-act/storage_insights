@@ -18,7 +18,8 @@ what Claude reads to know what the tool does and how to call it -- they
 are part of the interface, not just documentation for humans.
 """
 
-from typing import TypedDict
+from datetime import datetime, timezone
+from typing import Optional, TypedDict
 
 import boto3
 from mcp.server.fastmcp import FastMCP
@@ -37,6 +38,7 @@ from capacity_report import (
     get_demo_buckets,
     get_live_buckets,
     human_readable_size,
+    suggest_tier,
     summarize_buckets,
 )
 
@@ -44,6 +46,35 @@ from capacity_report import (
 # UIs (e.g. Claude Desktop's tool/server list) so users can tell which
 # server a tool came from.
 mcp = FastMCP("storage-insights")
+
+
+def _connect():
+    """
+    Build a boto3 S3 client pointed at MinIO, using the same
+    endpoint/credential env vars (with the same local-dev defaults) as
+    capacity_report.py's main(). Shared by every tool below so connection
+    setup lives in exactly one place.
+    """
+    return boto3.client(
+        "s3",
+        endpoint_url=MINIO_ENDPOINT,
+        aws_access_key_id=ACCESS_KEY,
+        aws_secret_access_key=SECRET_KEY,
+    )
+
+
+def _get_buckets(demo: bool):
+    """Fetch bucket data -- demo (synthetic) or live (real MinIO) -- as a list of dicts."""
+    if demo:
+        return get_demo_buckets()
+    return get_live_buckets(_connect())
+
+
+def _days_since(last_modified) -> Optional[int]:
+    """Days between now and a bucket's last-modified timestamp, or None if unknown."""
+    if last_modified is None:
+        return None
+    return (datetime.now(timezone.utc) - last_modified).days
 
 
 class StorageSummary(TypedDict):
@@ -77,19 +108,7 @@ def get_storage_summary(demo: bool = False) -> StorageSummary:
             to a live MinIO server. Useful when no real MinIO server is
             reachable, e.g. for demonstrations.
     """
-    if demo:
-        buckets = get_demo_buckets()
-    else:
-        # Same connection setup as capacity_report.py's main() -- reads
-        # MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY from the environment (or
-        # their local-MinIO defaults) rather than hardcoding anything.
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=MINIO_ENDPOINT,
-            aws_access_key_id=ACCESS_KEY,
-            aws_secret_access_key=SECRET_KEY,
-        )
-        buckets = get_live_buckets(s3)
+    buckets = _get_buckets(demo)
 
     totals = summarize_buckets(buckets)
     monthly_cost = estimate_monthly_cost(
@@ -108,6 +127,170 @@ def get_storage_summary(demo: bool = False) -> StorageSummary:
         "cost_tier": DEFAULT_TIER,
         "estimated_monthly_cost_usd": round(monthly_cost, 2),
         "estimated_monthly_cost_display": format_money(monthly_cost),
+    }
+
+
+class BucketDetail(TypedDict):
+    """The shape of one bucket's entry in get_bucket_details()'s return value."""
+
+    name: str
+    object_count: int
+    total_bytes: int
+    total_size_human: str
+    days_since_last_access: Optional[int]
+    estimated_monthly_cost_usd: float
+    estimated_monthly_cost_display: str
+    suggested_tier: Optional[str]
+
+
+class BucketDetailsResult(TypedDict):
+    """The shape of get_bucket_details()'s return value."""
+
+    mode: str
+    buckets: list[BucketDetail]
+
+
+def _to_bucket_detail(bucket: dict) -> BucketDetail:
+    """
+    Build a BucketDetail from one of get_live_buckets()/get_demo_buckets()'s
+    raw bucket dicts, using capacity_report.py's own cost and tiering
+    logic (estimate_monthly_cost, suggest_tier) so these numbers always
+    match what the CLI would print.
+    """
+    total_bytes = bucket["total_bytes"]
+    days_since_last_access = _days_since(bucket["last_modified"])
+    monthly_cost = estimate_monthly_cost(total_bytes, PRICING_PER_GB_MONTH[DEFAULT_TIER])
+
+    return {
+        "name": bucket["name"],
+        "object_count": bucket["object_count"],
+        "total_bytes": total_bytes,
+        "total_size_human": human_readable_size(total_bytes),
+        "days_since_last_access": days_since_last_access,
+        "estimated_monthly_cost_usd": round(monthly_cost, 2),
+        "estimated_monthly_cost_display": format_money(monthly_cost),
+        "suggested_tier": (
+            suggest_tier(days_since_last_access)
+            if days_since_last_access is not None
+            else None
+        ),
+    }
+
+
+@mcp.tool()
+def get_bucket_details(
+    bucket_name: Optional[str] = None, demo: bool = False
+) -> BucketDetailsResult:
+    """
+    Get detailed capacity, cost, and tiering info for a single bucket, or
+    for every bucket if no name is given.
+
+    For each bucket this includes: object count, total size, estimated
+    monthly cost at S3 Standard, how many days since it was last
+    modified/accessed, and a suggested colder storage tier if the bucket
+    looks mis-tiered for its age (None if S3 Standard is still the right
+    call).
+
+    Args:
+        bucket_name: Name of a specific bucket to look up. If omitted,
+            details for ALL buckets are returned instead.
+        demo: If True, return synthetic demo data instead of connecting
+            to a live MinIO server. Useful when no real MinIO server is
+            reachable, e.g. for demonstrations.
+    """
+    buckets = _get_buckets(demo)
+
+    if bucket_name is not None:
+        buckets = [b for b in buckets if b["name"] == bucket_name]
+        if not buckets:
+            raise ValueError(f"No bucket named {bucket_name!r} found.")
+
+    return {
+        "mode": "demo" if demo else "live",
+        "buckets": [_to_bucket_detail(b) for b in buckets],
+    }
+
+
+class SavingsOpportunity(TypedDict):
+    """One mis-tiered bucket found by find_savings(), and what fixing it would save."""
+
+    name: str
+    days_since_last_access: int
+    current_tier: str
+    current_monthly_cost_usd: float
+    suggested_tier: str
+    suggested_monthly_cost_usd: float
+    monthly_savings_usd: float
+
+
+class FindSavingsResult(TypedDict):
+    """The shape of find_savings()'s return value."""
+
+    mode: str
+    opportunities: list[SavingsOpportunity]
+    total_monthly_savings_usd: float
+    total_monthly_savings_display: str
+
+
+@mcp.tool()
+def find_savings(demo: bool = False) -> FindSavingsResult:
+    """
+    Find buckets that are mis-tiered for how long it's been since they
+    were last accessed, and estimate how much moving each one to a
+    cheaper tier would save per month.
+
+    Uses the same age-based tiering rule as capacity_report.py's CLI
+    output (suggest_tier): buckets untouched for 30+ days should move to
+    Standard-IA, 90+ days to Glacier Flexible Retrieval, and 270+ days to
+    Glacier Deep Archive. Buckets accessed recently enough that S3
+    Standard is still correct are left out of the results.
+
+    Args:
+        demo: If True, analyze synthetic demo data instead of connecting
+            to a live MinIO server. Useful when no real MinIO server is
+            reachable, e.g. for demonstrations.
+    """
+    buckets = _get_buckets(demo)
+
+    opportunities: list[SavingsOpportunity] = []
+    for bucket in buckets:
+        days_since_last_access = _days_since(bucket["last_modified"])
+        if days_since_last_access is None:
+            continue
+
+        suggested_tier = suggest_tier(days_since_last_access)
+        if suggested_tier is None:
+            continue
+
+        total_bytes = bucket["total_bytes"]
+        current_cost = estimate_monthly_cost(
+            total_bytes, PRICING_PER_GB_MONTH[DEFAULT_TIER]
+        )
+        suggested_cost = estimate_monthly_cost(
+            total_bytes, PRICING_PER_GB_MONTH[suggested_tier]
+        )
+        savings = current_cost - suggested_cost
+
+        opportunities.append(
+            {
+                "name": bucket["name"],
+                "days_since_last_access": days_since_last_access,
+                "current_tier": DEFAULT_TIER,
+                "current_monthly_cost_usd": round(current_cost, 2),
+                "suggested_tier": suggested_tier,
+                "suggested_monthly_cost_usd": round(suggested_cost, 2),
+                "monthly_savings_usd": round(savings, 2),
+            }
+        )
+
+    opportunities.sort(key=lambda o: o["monthly_savings_usd"], reverse=True)
+    total_savings = sum(o["monthly_savings_usd"] for o in opportunities)
+
+    return {
+        "mode": "demo" if demo else "live",
+        "opportunities": opportunities,
+        "total_monthly_savings_usd": round(total_savings, 2),
+        "total_monthly_savings_display": format_money(total_savings),
     }
 
 
