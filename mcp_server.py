@@ -37,11 +37,14 @@ from capacity_report import (
     estimate_monthly_cost,
     format_money,
     get_demo_buckets,
+    get_demo_history,
     get_live_buckets,
     human_readable_size,
+    read_snapshot_history,
     suggest_tier,
     summarize_buckets,
 )
+from capacity_report import forecast_growth as _forecast_growth
 from capacity_report import record_snapshot as _write_snapshot_rows
 
 # One FastMCP instance = one MCP server. The name shows up in MCP client
@@ -332,6 +335,83 @@ def record_snapshot(demo: bool = False) -> SnapshotResult:
         "timestamp_utc": rows[0]["timestamp_utc"] if rows else datetime.now(timezone.utc).isoformat(),
         "bucket_count": len(rows),
         "snapshot_path": SNAPSHOT_LOG_PATH,
+    }
+
+
+class BucketForecast(TypedDict):
+    """One bucket's entry in forecast_growth()'s return value."""
+
+    name: str
+    data_points: int
+    current_total_bytes: int
+    current_size_human: str
+    current_monthly_cost_usd: float
+    monthly_growth_bytes: int
+    monthly_growth_human: str
+    projected_total_bytes: int
+    projected_size_human: str
+    projected_monthly_cost_usd: float
+
+
+class ForecastGrowthResult(TypedDict):
+    """The shape of forecast_growth()'s return value."""
+
+    mode: str
+    months_ahead: int
+    bucket_count: int
+    buckets: list[BucketForecast]
+    total_current_bytes: int
+    total_current_size_human: str
+    total_current_monthly_cost_usd: float
+    total_projected_bytes: int
+    total_projected_size_human: str
+    total_projected_monthly_cost_usd: float
+    assumption: str
+
+
+@mcp.tool()
+def forecast_growth(months: int = 6, demo: bool = True) -> ForecastGrowthResult:
+    """
+    Project each bucket's storage size and monthly cost `months` months
+    into the future by fitting a simple linear trend (ordinary least
+    squares over time vs. size) to its historical snapshots, then
+    reading that line's value at a future point in time. Reuses
+    capacity_report.py's existing cost math (estimate_monthly_cost) for
+    both current and projected cost -- pricing itself is never
+    recomputed here.
+
+    Demo mode (the default) forecasts against ~6 months of
+    fabricated-but-varied synthetic history for the 6 demo buckets
+    (media-assets and logs-cold grow fastest, active-workloads slowest)
+    -- use this to see a forecast today without waiting for real history
+    to accumulate.
+
+    Live mode forecasts against the real snapshot log written by
+    record_snapshot(). A bucket needs at least 2 recorded snapshots to
+    be forecastable; call record_snapshot() repeatedly over time (e.g. a
+    daily cron job) to build that history up.
+
+    IMPORTANT: the result always includes an "assumption" field stating
+    that this projects PAST linear growth forward unchanged. It is a
+    directional estimate, not a guarantee -- always surface that caveat
+    alongside the numbers, never present a forecast as certain.
+
+    Args:
+        months: How many months ahead to project. Defaults to 6.
+        demo: If True (the default), forecast against synthetic demo
+            history. If False, forecast against the real snapshot log,
+            which may have too little history yet to forecast anything.
+    """
+    if demo:
+        history_rows = get_demo_history()
+    else:
+        history_rows = read_snapshot_history(mode="live")
+
+    result = _forecast_growth(history_rows, months_ahead=months)
+
+    return {
+        "mode": "demo" if demo else "live",
+        **result,
     }
 
 

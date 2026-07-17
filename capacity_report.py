@@ -131,6 +131,16 @@ def human_readable_size(num_bytes):
     return f"{size:.2f} PB"
 
 
+def human_readable_signed_size(num_bytes):
+    """
+    Like human_readable_size(), but keeps a +/- sign -- for describing a
+    CHANGE in size (e.g. growth per month) rather than an absolute size,
+    where the direction matters as much as the magnitude.
+    """
+    sign = "-" if num_bytes < 0 else "+"
+    return f"{sign}{human_readable_size(abs(num_bytes))}"
+
+
 # --- Demo data -----------------------------------------------------------
 # Hand-picked to tell a believable story: a mix of hot, warm, and cold
 # buckets so the tiering suggestions in print_report() have something
@@ -168,6 +178,68 @@ def get_demo_buckets():
             }
         )
     return buckets
+
+
+# --- Demo history (for forecast_growth) -----------------------------------
+# Fabricated MONTHLY growth rates (TB/month) per demo bucket, chosen to
+# tell a varied story: media-assets and logs-cold grow fastest (lots of
+# new media / constant log accumulation), prod-database-snapshots and
+# active-workloads grow slowest (snapshots get pruned, active data gets
+# rotated out). This is what makes forecast_growth() project different
+# outcomes per bucket instead of just scaling everything by the same
+# amount.
+DEMO_HISTORY_GROWTH_TB_PER_MONTH = {
+    "finance-archive": 0.2,
+    "engineering-backups": 0.3,
+    "prod-database-snapshots": 0.1,
+    "media-assets": 1.0,
+    "logs-cold": 0.8,
+    "active-workloads": 0.05,
+}
+
+
+def get_demo_history(months=6):
+    """
+    Build ~`months` synthetic MONTHLY snapshots per demo bucket, ending
+    at the exact current sizes get_demo_buckets() uses (so "now" agrees
+    between the two), and growing backward in time at each bucket's rate
+    from DEMO_HISTORY_GROWTH_TB_PER_MONTH.
+
+    This is fabricated history for DEMO PURPOSES ONLY -- it lives
+    entirely in memory and is never written to snapshots.csv, the real
+    log record_snapshot() writes to. forecast_growth() can't tell the
+    difference between this and real history because both come back in
+    the same shape: a list of {timestamp, bucket_name, object_count,
+    total_bytes} dicts.
+    """
+    now = datetime.now(timezone.utc)
+    current_by_name = {
+        name: (size_tb, object_count) for name, size_tb, _, object_count in DEMO_BUCKETS
+    }
+
+    history = []
+    for bucket_name, growth_tb_per_month in DEMO_HISTORY_GROWTH_TB_PER_MONTH.items():
+        current_size_tb, current_object_count = current_by_name[bucket_name]
+
+        # months_ago counts down from the oldest point to 0 ("now"), so
+        # the last snapshot generated always matches today's actual size.
+        for months_ago in range(months - 1, -1, -1):
+            size_tb = max(current_size_tb - growth_tb_per_month * months_ago, 0.01)
+            # Scale object count down along with size so older snapshots
+            # look proportionally smaller too, not just byte-for-byte.
+            object_count = max(
+                round(current_object_count * (size_tb / current_size_tb)), 1
+            )
+            history.append(
+                {
+                    "timestamp": now - timedelta(days=30 * months_ago),
+                    "bucket_name": bucket_name,
+                    "object_count": object_count,
+                    "total_bytes": int(size_tb * BYTES_PER_TB),
+                }
+            )
+
+    return history
 
 
 def get_live_buckets(s3):
@@ -260,6 +332,180 @@ def record_snapshot(buckets, mode, path=SNAPSHOT_LOG_PATH):
         writer.writerows(rows)
 
     return rows
+
+
+def read_snapshot_history(path=SNAPSHOT_LOG_PATH, mode=None):
+    """
+    Read the snapshot log back into memory, parsing timestamps/numbers
+    so the result has the exact same shape get_demo_history() returns --
+    a list of {timestamp, bucket_name, object_count, total_bytes} dicts.
+    That shared shape is what lets forecast_growth() run identically on
+    real history or synthetic demo history.
+
+    Args:
+        mode: If given, only return rows recorded under this mode
+            ("live" or "demo") -- useful since a single log file could
+            in principle contain snapshots from both, if someone ran
+            `--snapshot` with and without `--demo`.
+
+    Returns an empty list if the log file doesn't exist yet (e.g. no
+    snapshots have been recorded).
+    """
+    if not os.path.exists(path):
+        return []
+
+    rows = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            if mode is not None and row["mode"] != mode:
+                continue
+            rows.append(
+                {
+                    "timestamp": datetime.fromisoformat(row["timestamp_utc"]),
+                    "bucket_name": row["bucket_name"],
+                    "object_count": int(row["object_count"]),
+                    "total_bytes": int(row["total_bytes"]),
+                }
+            )
+    return rows
+
+
+def fit_linear_trend(points):
+    """
+    Fit a straight line y = slope*x + intercept through (x, y) points
+    using ordinary least squares -- the standard "line of best fit".
+
+    The closed-form solution (no iteration, no library needed) is:
+
+        slope     = (n*sum(xy) - sum(x)*sum(y)) / (n*sum(x^2) - sum(x)^2)
+        intercept = (sum(y) - slope*sum(x)) / n
+
+    Intuition: `slope` is the average rate of change of y per unit of x
+    (here: bytes grown per day) that best explains the points overall;
+    `intercept` is where that line would cross x=0. Once you have both,
+    you can read the line's value at ANY x -- including a future one --
+    to get a projection.
+
+    Requires at least 2 points (a line needs two points to be defined).
+    If every point shares the same x (can't happen with real timestamps,
+    but guarded anyway), treat the trend as flat at the average y.
+    """
+    n = len(points)
+    if n < 2:
+        raise ValueError("fit_linear_trend() needs at least 2 points.")
+
+    sum_x = sum(x for x, _ in points)
+    sum_y = sum(y for _, y in points)
+    sum_xy = sum(x * y for x, y in points)
+    sum_x2 = sum(x * x for x, _ in points)
+
+    denominator = n * sum_x2 - sum_x**2
+    if denominator == 0:
+        return 0.0, sum_y / n
+
+    slope = (n * sum_xy - sum_x * sum_y) / denominator
+    intercept = (sum_y - slope * sum_x) / n
+    return slope, intercept
+
+
+def forecast_bucket_growth(bucket_name, rows, months_ahead):
+    """
+    Fit a linear trend to one bucket's historical (timestamp, total_bytes)
+    snapshots and project its size and cost `months_ahead` months into
+    the future.
+
+    Uses fit_linear_trend() for the math (x = days since the bucket's
+    earliest snapshot, y = total_bytes), then reads the fitted line's
+    value at a future x to get the projected size. Cost math reuses
+    estimate_monthly_cost()/PRICING_PER_GB_MONTH -- nothing about
+    pricing is recomputed here.
+
+    Returns None if there are fewer than 2 snapshots for this bucket --
+    you can't fit a line through a single point, so there's no trend to
+    project.
+    """
+    points = sorted(rows, key=lambda r: r["timestamp"])
+    if len(points) < 2:
+        return None
+
+    epoch = points[0]["timestamp"]
+    xy_points = [
+        ((p["timestamp"] - epoch).total_seconds() / 86400, p["total_bytes"])
+        for p in points
+    ]
+    slope, intercept = fit_linear_trend(xy_points)
+
+    latest_x, latest_bytes = xy_points[-1]
+    monthly_growth_bytes = slope * 30
+    future_x = latest_x + months_ahead * 30
+    # Clamp at 0 -- a bucket can't have negative bytes, even if a
+    # shrinking trend's line technically crosses below zero.
+    projected_bytes = max(round(slope * future_x + intercept), 0)
+
+    current_cost = estimate_monthly_cost(latest_bytes, PRICING_PER_GB_MONTH[DEFAULT_TIER])
+    projected_cost = estimate_monthly_cost(
+        projected_bytes, PRICING_PER_GB_MONTH[DEFAULT_TIER]
+    )
+
+    return {
+        "name": bucket_name,
+        "data_points": len(points),
+        "current_total_bytes": latest_bytes,
+        "current_size_human": human_readable_size(latest_bytes),
+        "current_monthly_cost_usd": round(current_cost, 2),
+        "monthly_growth_bytes": round(monthly_growth_bytes),
+        "monthly_growth_human": f"{human_readable_signed_size(monthly_growth_bytes)}/month",
+        "projected_total_bytes": projected_bytes,
+        "projected_size_human": human_readable_size(projected_bytes),
+        "projected_monthly_cost_usd": round(projected_cost, 2),
+    }
+
+
+def forecast_growth(history_rows, months_ahead):
+    """
+    Project every bucket's storage size and cost forward by fitting a
+    linear trend to its own historical snapshots (see
+    forecast_bucket_growth). Buckets with fewer than 2 historical data
+    points are skipped -- there's nothing to fit a trend to yet.
+
+    Always includes an "assumption" string that must be surfaced
+    alongside the numbers: this projects PAST linear growth forward
+    unchanged, which is a simplifying assumption, not a guarantee.
+    """
+    buckets_history = {}
+    for row in history_rows:
+        buckets_history.setdefault(row["bucket_name"], []).append(row)
+
+    bucket_forecasts = []
+    for bucket_name, rows in buckets_history.items():
+        forecast = forecast_bucket_growth(bucket_name, rows, months_ahead)
+        if forecast is not None:
+            bucket_forecasts.append(forecast)
+    bucket_forecasts.sort(key=lambda f: f["name"])
+
+    total_current_bytes = sum(f["current_total_bytes"] for f in bucket_forecasts)
+    total_projected_bytes = sum(f["projected_total_bytes"] for f in bucket_forecasts)
+    total_current_cost = sum(f["current_monthly_cost_usd"] for f in bucket_forecasts)
+    total_projected_cost = sum(f["projected_monthly_cost_usd"] for f in bucket_forecasts)
+
+    return {
+        "months_ahead": months_ahead,
+        "bucket_count": len(bucket_forecasts),
+        "buckets": bucket_forecasts,
+        "total_current_bytes": total_current_bytes,
+        "total_current_size_human": human_readable_size(total_current_bytes),
+        "total_current_monthly_cost_usd": round(total_current_cost, 2),
+        "total_projected_bytes": total_projected_bytes,
+        "total_projected_size_human": human_readable_size(total_projected_bytes),
+        "total_projected_monthly_cost_usd": round(total_projected_cost, 2),
+        "assumption": (
+            f"Assumes each bucket keeps growing at its own current linear "
+            f"rate for the next {months_ahead} month(s). Real growth can "
+            f"speed up, slow down, or reverse due to business changes, "
+            f"cleanup, or seasonality -- treat this as a directional "
+            f"estimate, not a guarantee."
+        ),
+    }
 
 
 def print_report(buckets, demo=False):
