@@ -197,6 +197,21 @@ def get_live_buckets(s3):
     return buckets
 
 
+def summarize_buckets(buckets):
+    """
+    Aggregate a list of bucket dicts (the shape get_live_buckets() and
+    get_demo_buckets() both return) into totals across all buckets.
+
+    Pulled out as its own function so print_report()'s grand-total
+    section and anything else that needs a summary (e.g. mcp_server.py)
+    share one implementation instead of each summing buckets themselves.
+    """
+    return {
+        "total_bytes": sum(b["total_bytes"] for b in buckets),
+        "total_objects": sum(b["object_count"] for b in buckets),
+    }
+
+
 def print_report(buckets, demo=False):
     """
     Print the full capacity/cost report for a list of buckets. This is
@@ -215,13 +230,8 @@ def print_report(buckets, demo=False):
 
     now = datetime.now(timezone.utc)
 
-    # Running total across all buckets, so we can print a grand-total
-    # summary (capacity + cost) after the per-bucket loop finishes.
-    grand_total_bytes = 0
-
     for bucket in buckets:
         total_bytes = bucket["total_bytes"]
-        grand_total_bytes += total_bytes
 
         print(f"Bucket: {bucket['name']}")
         print(f"  Objects: {bucket['object_count']}")
@@ -255,6 +265,8 @@ def print_report(buckets, demo=False):
         print()
 
     # --- Grand total across all buckets ---------------------------------
+    grand_total_bytes = summarize_buckets(buckets)["total_bytes"]
+
     print("=" * 40)
     print("Grand total (all buckets)")
     print(f"  Total size: {human_readable_size(grand_total_bytes)}")
