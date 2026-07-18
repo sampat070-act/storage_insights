@@ -9,5 +9,5 @@ __pycache__/
 # Snapshot log - local runtime data built up over repeated runs, not source.
 snapshots.csv
 
-# Output log from the daily snapshot cron job.
+# Output log from the daily snapshot job (launchd LaunchAgent).
 cron_snapshot.log
