@@ -1,96 +1,96 @@
 # storage_insights
 
-Connects to a MinIO server (S3-compatible object storage) and reports, for
-every bucket, how many objects it holds, how much space they use, and what
-that costs per month at S3 Standard vs. colder tiers (Standard-IA, Glacier
-Flexible Retrieval, Glacier Deep Archive).
+An MCP-powered storage analytics tool that surfaces capacity, cost, mis-tiering savings, and 6-month growth forecasts for S3-compatible object storage — all queryable in plain English through Claude.
 
-## Setup
+*Built by a storage infrastructure engineer with 15 years across enterprise SAN, NAS, and software-defined object platforms — exploring what AI-native infrastructure tooling looks like.*
+
+<!-- TODO: add 30-second demo GIF here -->
+
+## Why this matters
+
+Object storage bills grow quietly. Buckets accumulate data long after anyone is actively using it, sit in the most expensive tier by default, and nobody notices until finance asks why the cloud bill jumped. Answering "how much are we spending, where is it wasted, and what will it cost in six months?" usually means someone manually pulling reports and building a spreadsheet.
+
+This tool answers those three questions on demand, conversationally, against live infrastructure — turning storage cost management from a quarterly fire drill into a question you can just ask.
+
+## What it does
+
+**Capacity reporting** — objects, size, and last-accessed age for every bucket, live from the storage backend.
+
+**Cost estimation across S3 tiers** — every bucket's monthly cost at S3 Standard, and what it would cost instead at Standard-IA, Glacier Flexible Retrieval, or Glacier Deep Archive.
+
+**Savings analysis** — flags buckets sitting in a hotter (more expensive) tier than their access pattern justifies, and quantifies the fix. On the demo dataset, this finds **$373.33/month in potential savings** across three mis-tiered buckets — one of them (`logs-cold`, untouched for 300 days) accounts for $145.20/month of that on its own.
+
+**Growth forecasting** — fits a linear trend to historical snapshots and projects size and cost forward. On the demo dataset, a 6-month projection takes total storage from **34.30 TB to 49.00 TB**, and monthly cost from **$867.40 to $1,239.15** — a number worth knowing before it shows up as a surprise on next year's budget.
+
+## Example
+
+> **"Where am I wasting money?"**
+>
+> You're overpaying on 3 of 6 buckets — all sitting in hot S3 Standard storage despite going untouched for months:
+>
+> | Bucket | Idle for | Move to | Save/mo |
+> |---|---|---|---|
+> | logs-cold | 300 days | Glacier Deep Archive | $145.20 |
+> | media-assets | 45 days | Standard-IA | $138.54 |
+> | finance-archive | 120 days | Glacier Flexible Retrieval | $89.59 |
+>
+> **Total potential savings: $373.33/month** (~43% of current spend).
+
+## Architecture
+
+One shared analytics engine (`capacity_report.py`) with two interfaces on top of it — a CLI for scripting and cron/launchd jobs, and an MCP server (`mcp_server.py`) for conversational access. Every cost calculation, tiering rule, and growth projection lives in exactly one place; the MCP tools import and reuse that logic rather than reimplementing it, so the two interfaces can never disagree on a number.
+
+It is built and tested against a local MinIO server, but MinIO speaks the same S3 API as AWS S3 and NetApp StorageGRID. Pointing `MINIO_ENDPOINT` at a real S3 or StorageGRID endpoint — or dropping it entirely for AWS — works unchanged, with no code changes required.
+
+## How to run it
+
+### Setup
 
 ```
 pip install -r requirements.txt
 ```
 
-By default the script connects to `http://localhost:9000` using MinIO's
-standard local dev credentials. Override with environment variables if
-needed:
+By default it connects to `http://localhost:9000` using MinIO's standard local dev credentials. Override with environment variables for a real backend:
 
 ```
-export MINIO_ENDPOINT=http://your-minio-host:9000
+export MINIO_ENDPOINT=http://your-storage-host:9000
 export MINIO_ACCESS_KEY=your-access-key
 export MINIO_SECRET_KEY=your-secret-key
 ```
 
-## Usage
+### CLI
 
 ```
-python capacity_report.py
+python capacity_report.py            # live report
+python capacity_report.py --demo     # synthetic demo data, no server needed
+python capacity_report.py --snapshot # log a data point for forecasting
 ```
 
-### Demo mode
-
-```
-python capacity_report.py --demo
-```
-
-Runs the report against synthetic, production-scale bucket data instead of
-connecting to MinIO -- useful for demos or trying out the tool without a
-live server. Output is clearly marked with a `=== DEMO MODE (synthetic
-data) ===` header. Demo mode reuses the exact same cost and formatting
-logic as live mode; only the data source changes.
-
-### Snapshot logging
-
-```
-python capacity_report.py --snapshot
-```
-
-Appends one row per bucket (timestamp, object count, total size) to
-`snapshots.csv` instead of printing the full report -- intended for a
-periodic cron job. Building up rows over time is what lets the MCP
-server's `forecast_growth` tool (below) project future growth from real
-history instead of a single point-in-time snapshot.
-
-## MCP server
-
-`mcp_server.py` exposes the same capacity, cost, and forecasting logic as
-an MCP (Model Context Protocol) tool server, so an MCP client (e.g. Claude
-Desktop, Claude Code) can query it conversationally instead of running the
-CLI by hand. It reuses every calculation from `capacity_report.py` --
-there is no separate cost or tiering logic to keep in sync.
+### MCP server (conversational access)
 
 ```
 python mcp_server.py
 ```
 
-This starts the server listening on stdio; it's meant to be launched as a
-subprocess by an MCP client's config, not run standalone.
+Add it to Claude Code with:
 
-### Tools
+```
+claude mcp add storage-insights -- python /path/to/storage_insights/mcp_server.py
+```
 
-- **`get_storage_summary(demo=False)`** -- total capacity, object count,
-  and estimated monthly cost across all buckets.
-- **`get_bucket_details(bucket_name=None, demo=False)`** -- capacity,
-  cost, last-accessed age, and suggested tier for one bucket, or for
-  every bucket if `bucket_name` is omitted.
-- **`find_savings(demo=False)`** -- buckets that are mis-tiered for how
-  long it's been since they were last accessed, with current cost,
-  suggested tier, cost at that tier, and monthly savings (plus a total
-  across all buckets).
-- **`record_snapshot(demo=False)`** -- append a snapshot of current
-  bucket sizes to `snapshots.csv`, the same log `--snapshot` writes to.
-  Call this repeatedly over time (e.g. via a daily cron job) to build up
-  the history `forecast_growth` needs.
-- **`forecast_growth(months=6, demo=True)`** -- fit a simple linear trend
-  to each bucket's snapshot history and project its size and cost
-  `months` ahead. Demo mode (the default) uses ~6 months of synthetic
-  history with varied per-bucket growth rates, so it works immediately
-  without waiting for real data. Live mode reads `snapshots.csv` and
-  needs at least 2 real snapshots per bucket before a bucket is
-  forecastable. Every result includes an `assumption` field stating the
-  projection assumes current linear growth continues unchanged --
-  it's a directional estimate, not a guarantee.
+Or, for Claude Desktop, add it to `claude_desktop_config.json`:
 
-Every tool accepts `demo: bool` to run against synthetic demo data
-instead of connecting to a live MinIO server, mirroring the CLI's
-`--demo` flag.
+```json
+{
+  "mcpServers": {
+    "storage-insights": {
+      "command": "python",
+      "args": ["/path/to/storage_insights/mcp_server.py"]
+    }
+  }
+}
+```
+
+Once connected, ask Claude things like "what's my storage costing me?", "where am I wasting money?", or "what will my storage look like in 6 months?" — no dashboards, no manual reports.
+
+**Tools exposed:** `get_storage_summary`, `get_bucket_details`, `find_savings`, `record_snapshot`, `forecast_growth` — every one supports a `demo` flag to run against synthetic data with no live server required.
