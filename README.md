@@ -8,6 +8,26 @@ An MCP-powered storage analytics tool that surfaces capacity, cost, mis-tiering 
 
 *Regenerate this GIF any time with `vhs demo.tape` (requires [vhs](https://github.com/charmbracelet/vhs)); `demo.py` drives it and calls the exact same functions the MCP tools use.*
 
+## Dashboard
+
+Everything above is also available as a polished, executive-facing web dashboard — no terminal or Claude client required, just a browser.
+
+![Storage Insights dashboard: KPI row, savings opportunities, and per-bucket breakdown](screenshots/dashboard-main.png)
+
+*Total capacity, cost, and the $373.33/mo in savings opportunities, at a glance — plus a per-bucket breakdown with tier-status badges.*
+
+![6-month forecast chart with actual history and projected growth](screenshots/dashboard-forecast.png)
+
+*The same linear-trend forecast `forecast_growth` returns, plotted against the historical data points it was fit from — actual as a solid line, projected as dashed.*
+
+Run it with:
+
+```
+python dashboard.py --demo
+```
+
+Then open `http://127.0.0.1:8000` — a Live/Demo toggle in the header switches data sources instantly, no restart needed. (Full run instructions below.)
+
 ## Why this matters
 
 Object storage bills grow quietly. Buckets accumulate data long after anyone is actively using it, sit in the most expensive tier by default, and nobody notices until finance asks why the cloud bill jumped. Answering "how much are we spending, where is it wasted, and what will it cost in six months?" usually means someone manually pulling reports and building a spreadsheet.
@@ -40,7 +60,7 @@ This tool answers those three questions on demand, conversationally, against liv
 
 ## Architecture
 
-One shared analytics engine (`capacity_report.py`) with two interfaces on top of it — a CLI for scripting and cron/launchd jobs, and an MCP server (`mcp_server.py`) for conversational access. Every cost calculation, tiering rule, and growth projection lives in exactly one place; the MCP tools import and reuse that logic rather than reimplementing it, so the two interfaces can never disagree on a number.
+One shared analytics engine (`capacity_report.py`) with three interfaces on top of it — a CLI for scripting and cron/launchd jobs, an MCP server (`mcp_server.py`) for conversational access, and a web dashboard (`dashboard.py`) for at-a-glance executive reporting. Every cost calculation, tiering rule, and growth projection lives in exactly one place; all three interfaces import and reuse that logic rather than reimplementing it, so none of them can ever disagree on a number.
 
 It is built and tested against a local MinIO server, but MinIO speaks the same S3 API as AWS S3 and NetApp StorageGRID. Pointing `MINIO_ENDPOINT` at a real S3 or StorageGRID endpoint — or dropping it entirely for AWS — works unchanged, with no code changes required.
 
@@ -93,6 +113,15 @@ Or, for Claude Desktop, add it to `claude_desktop_config.json`:
 }
 ```
 
-Once connected, ask Claude things like "what's my storage costing me?", "where am I wasting money?", or "what will my storage look like in 6 months?" — no dashboards, no manual reports.
+Once connected, ask Claude things like "what's my storage costing me?", "where am I wasting money?", or "what will my storage look like in 6 months?" — no manual reports, no context-switching to a separate tool.
 
 **Tools exposed:** `get_storage_summary`, `get_bucket_details`, `find_savings`, `record_snapshot`, `forecast_growth` — every one supports a `demo` flag to run against synthetic data with no live server required.
+
+### Web dashboard
+
+```
+python dashboard.py            # live data by default
+python dashboard.py --demo     # opens with synthetic demo data
+```
+
+Open `http://127.0.0.1:8000`. The Live/Demo toggle in the header re-fetches instantly, so you can flip between real MinIO data and the synthetic dataset without restarting the server.
