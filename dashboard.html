@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage Insights — Executive Dashboard</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:            #f9f9f7;
+    --surface:         #fcfcfb;
+    --surface-raised:  #ffffff;
+    --text-primary:    #0b0b0b;
+    --text-secondary:  #52514e;
+    --text-muted:      #898781;
+    --gridline:        #e1e0d9;
+    --baseline:        #c3c2b7;
+    --border:          rgba(11,11,11,0.10);
+    --series-1:        #2a78d6;   /* sequential blue */
+    --series-1-wash:   rgba(42,120,214,0.10);
+    --status-good:     #0ca30c;
+    --status-good-bg:  rgba(12,163,12,0.08);
+    --status-warning:  #b6790c;   /* darkened for light-surface text contrast */
+    --status-warning-bg: rgba(250,178,25,0.14);
+    --shadow: 0 1px 2px rgba(11,11,11,0.04), 0 4px 16px rgba(11,11,11,0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page:            #0d0d0d;
+      --surface:         #1a1a19;
+      --surface-raised:  #212120;
+      --text-primary:    #ffffff;
+      --text-secondary:  #c3c2b7;
+      --text-muted:      #898781;
+      --gridline:        #2c2c2a;
+      --baseline:        #383835;
+      --border:          rgba(255,255,255,0.10);
+      --series-1:        #3987e5;
+      --series-1-wash:   rgba(57,135,229,0.14);
+      --status-good:     #0ca30c;
+      --status-good-bg:  rgba(12,163,12,0.14);
+      --status-warning:  #fab219;
+      --status-warning-bg: rgba(250,178,25,0.16);
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 20px rgba(0,0,0,0.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+
+  /* ---------- Header ---------- */
+  header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 28px;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    letter-spacing: -0.01em;
+  }
+  header .subtitle {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+  .header-controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  #updated-at {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .toggle {
+    display: inline-flex;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 2px;
+    box-shadow: var(--shadow);
+  }
+  .toggle button {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .toggle button.active {
+    background: var(--series-1);
+    color: #ffffff;
+  }
+
+  /* ---------- Cards ---------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+  section { margin-bottom: 24px; }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 10px 2px;
+  }
+
+  /* ---------- KPI row ---------- */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  .kpi-tile {
+    padding: 18px 20px;
+  }
+  .kpi-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0 0 8px;
+  }
+  .kpi-value {
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+  }
+  .kpi-value.accent { color: var(--status-good); }
+  .kpi-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 6px;
+  }
+
+  /* ---------- Savings ---------- */
+  .savings-card {
+    padding: 20px 22px 22px;
+  }
+  .savings-headline {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+  }
+  .savings-headline .amount {
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--status-good);
+  }
+  .savings-headline .desc {
+    font-size: 14px;
+    color: var(--text-secondary);
+  }
+  .savings-empty {
+    font-size: 14px;
+    color: var(--text-secondary);
+    padding: 8px 0 2px;
+  }
+  .savings-rows { margin-top: 16px; }
+  .savings-row {
+    display: grid;
+    grid-template-columns: 160px 1fr 96px;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 0;
+    border-top: 1px solid var(--gridline);
+  }
+  .savings-row:first-child { border-top: none; }
+  .savings-row .bucket-name {
+    font-size: 13.5px;
+    font-weight: 500;
+  }
+  .savings-row .tier-path {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+  .savings-bar-track {
+    position: relative;
+    height: 10px;
+    background: var(--gridline);
+    border-radius: 5px;
+    overflow: hidden;
+  }
+  .savings-bar-fill {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    background: var(--series-1);
+    border-radius: 5px;
+  }
+  .savings-row .amount {
+    font-size: 14px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--status-good);
+  }
+
+  /* ---------- Table ---------- */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+  }
+  thead th {
+    text-align: left;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--gridline);
+  }
+  thead th.num, td.num { text-align: right; }
+  tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--gridline);
+    font-variant-numeric: tabular-nums;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.bucket-name { font-variant-numeric: normal; font-weight: 500; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 3px 9px;
+    border-radius: 999px;
+  }
+  .badge.good { color: var(--status-good); background: var(--status-good-bg); }
+  .badge.warning { color: var(--status-warning); background: var(--status-warning-bg); }
+
+  /* ---------- Forecast ---------- */
+  .forecast-card { padding: 20px 22px 16px; }
+  .forecast-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin-bottom: 6px;
+  }
+  .forecast-figures { display: flex; gap: 32px; flex-wrap: wrap; }
+  .forecast-figure .label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+  .forecast-figure .value {
+    font-size: 20px;
+    font-weight: 600;
+  }
+  .forecast-figure .value .arrow { color: var(--text-muted); font-weight: 400; margin: 0 6px; }
+  .chart-key {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    align-items: center;
+  }
+  .chart-key .swatch { display: inline-flex; align-items: center; gap: 6px; }
+  .chart-key .line { display: inline-block; width: 16px; height: 0; border-top: 2px solid var(--series-1); }
+  .chart-key .line.dashed { border-top-style: dashed; }
+
+  .chart-wrap { position: relative; margin-top: 8px; }
+  svg.forecast-chart { width: 100%; height: auto; display: block; overflow: visible; }
+  .forecast-note {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 10px;
+    line-height: 1.5;
+  }
+
+  #tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    padding: 8px 12px;
+    font-size: 12.5px;
+    z-index: 100;
+    transform: translate(-50%, -120%);
+  }
+  #tooltip .tt-value { font-weight: 600; font-size: 14px; }
+  #tooltip .tt-label { color: var(--text-secondary); margin-top: 2px; }
+
+  main.loading { opacity: 0.55; transition: opacity 120ms ease; }
+  main { transition: opacity 120ms ease; }
+
+  @media (max-width: 760px) {
+    .kpi-row { grid-template-columns: repeat(2, 1fr); }
+    .savings-row { grid-template-columns: 1fr; row-gap: 6px; }
+    .savings-row .amount { text-align: left; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div>
+        <h1>Storage Insights</h1>
+        <p class="subtitle">Capacity, cost, savings, and 6-month forecast at a glance</p>
+      </div>
+      <div class="header-controls">
+        <span id="updated-at"></span>
+        <div class="toggle" id="mode-toggle">
+          <button data-mode="live" id="btn-live">Live</button>
+          <button data-mode="demo" id="btn-demo">Demo</button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="kpi-row" id="kpi-row"></section>
+
+      <section>
+        <p class="section-title">Savings opportunities</p>
+        <div class="card savings-card" id="savings-card"></div>
+      </section>
+
+      <section>
+        <p class="section-title">Buckets</p>
+        <div class="card">
+          <table>
+            <thead>
+              <tr>
+                <th>Bucket</th>
+                <th class="num">Size</th>
+                <th class="num">Monthly cost</th>
+                <th class="num">Last accessed</th>
+                <th>Tier status</th>
+              </tr>
+            </thead>
+            <tbody id="bucket-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <p class="section-title">6-month forecast</p>
+        <div class="card forecast-card" id="forecast-card"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="tooltip" hidden></div>
+
+  <script>
+    const state = { mode: {{DEFAULT_DEMO}} ? "demo" : "live" };
+
+    function formatBytes(numBytes) {
+      const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+      let size = numBytes;
+      let i = 0;
+      while (size >= 1024 && i < units.length - 1) {
+        size /= 1024;
+        i++;
+      }
+      return `${size.toFixed(2)} ${units[i]}`;
+    }
+
+    function formatMoney(n) {
+      return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    async function fetchDashboard(mode) {
+      const res = await fetch(`/api/dashboard?demo=${mode === "demo"}`);
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      return res.json();
+    }
+
+    function renderKpis(data) {
+      const row = document.getElementById("kpi-row");
+      row.replaceChildren();
+
+      const tiles = [
+        { label: "Total capacity", value: data.summary.total_size_human },
+        { label: "Total monthly cost", value: data.summary.estimated_monthly_cost_display },
+        { label: "Buckets", value: String(data.summary.bucket_count) },
+        {
+          label: "Potential savings",
+          value: data.savings.total_monthly_savings_display + "/mo",
+          accent: true,
+        },
+      ];
+
+      for (const tile of tiles) {
+        const el1 = el("div", "card kpi-tile");
+        el1.appendChild(el("p", "kpi-label", tile.label));
+        el1.appendChild(el("div", "kpi-value" + (tile.accent ? " accent" : ""), tile.value));
+        row.appendChild(el1);
+      }
+    }
+
+    function renderSavings(data) {
+      const card = document.getElementById("savings-card");
+      card.replaceChildren();
+
+      const opportunities = data.savings.opportunities;
+
+      if (opportunities.length === 0) {
+        card.appendChild(
+          el("p", "savings-empty", "No mis-tiered buckets found — every bucket is already in the right tier for its access pattern.")
+        );
+        return;
+      }
+
+      const headline = el("div", "savings-headline");
+      headline.appendChild(el("span", "amount", data.savings.total_monthly_savings_display + "/mo"));
+      headline.appendChild(
+        el("span", "desc", `in potential savings across ${opportunities.length} mis-tiered bucket${opportunities.length === 1 ? "" : "s"}`)
+      );
+      card.appendChild(headline);
+
+      const rows = el("div", "savings-rows");
+      const maxSavings = Math.max(...opportunities.map((o) => o.monthly_savings_usd));
+
+      for (const opp of opportunities) {
+        const row = el("div", "savings-row");
+
+        const nameCol = el("div");
+        nameCol.appendChild(el("div", "bucket-name", opp.name));
+        nameCol.appendChild(
+          el("div", "tier-path", `idle ${opp.days_since_last_access}d · ${opp.current_tier} → ${opp.suggested_tier}`)
+        );
+        row.appendChild(nameCol);
+
+        const track = el("div", "savings-bar-track");
+        const fill = el("div", "savings-bar-fill");
+        fill.style.width = `${(opp.monthly_savings_usd / maxSavings) * 100}%`;
+        track.appendChild(fill);
+        row.appendChild(track);
+
+        row.appendChild(el("div", "amount", formatMoney(opp.monthly_savings_usd) + "/mo"));
+
+        rows.appendChild(row);
+      }
+      card.appendChild(rows);
+    }
+
+    function renderBuckets(data) {
+      const tbody = document.getElementById("bucket-rows");
+      tbody.replaceChildren();
+
+      const sorted = [...data.buckets].sort((a, b) => b.total_bytes - a.total_bytes);
+
+      for (const bucket of sorted) {
+        const tr = el("tr");
+        tr.appendChild(el("td", "bucket-name", bucket.name));
+        tr.appendChild(el("td", "num", bucket.total_size_human));
+        tr.appendChild(el("td", "num", bucket.estimated_monthly_cost_display));
+        tr.appendChild(
+          el("td", "num", bucket.days_since_last_access === null ? "—" : `${bucket.days_since_last_access}d ago`)
+        );
+
+        const statusTd = el("td");
+        if (bucket.suggested_tier) {
+          const badge = el("span", "badge warning", `Move to ${bucket.suggested_tier}`);
+          statusTd.appendChild(badge);
+        } else {
+          const badge = el("span", "badge good", "Optimal ✓");
+          statusTd.appendChild(badge);
+        }
+        tr.appendChild(statusTd);
+
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderForecast(data) {
+      const card = document.getElementById("forecast-card");
+      card.replaceChildren();
+
+      const top = el("div", "forecast-top");
+
+      const figures = el("div", "forecast-figures");
+
+      const sizeFigure = el("div", "forecast-figure");
+      sizeFigure.appendChild(el("div", "label", "Total capacity"));
+      const sizeValue = el("div", "value");
+      sizeValue.appendChild(document.createTextNode(data.forecast.total_current_size_human || "—"));
+      sizeValue.appendChild(el("span", "arrow", "→"));
+      sizeValue.appendChild(document.createTextNode(data.forecast.total_projected_size_human || "—"));
+      sizeFigure.appendChild(sizeValue);
+      figures.appendChild(sizeFigure);
+
+      const costFigure = el("div", "forecast-figure");
+      costFigure.appendChild(el("div", "label", "Monthly cost"));
+      const costValue = el("div", "value");
+      costValue.appendChild(
+        document.createTextNode(data.forecast.total_current_monthly_cost_usd != null ? formatMoney(data.forecast.total_current_monthly_cost_usd) : "—")
+      );
+      costValue.appendChild(el("span", "arrow", "→"));
+      costValue.appendChild(
+        document.createTextNode(data.forecast.total_projected_monthly_cost_usd != null ? formatMoney(data.forecast.total_projected_monthly_cost_usd) : "—")
+      );
+      costFigure.appendChild(costValue);
+      figures.appendChild(costFigure);
+
+      top.appendChild(figures);
+
+      const key = el("div", "chart-key");
+      const actualKey = el("span", "swatch");
+      actualKey.appendChild(el("span", "line"));
+      actualKey.appendChild(document.createTextNode("Actual"));
+      const projectedKey = el("span", "swatch");
+      projectedKey.appendChild(el("span", "line dashed"));
+      projectedKey.appendChild(document.createTextNode("Projected"));
+      key.appendChild(actualKey);
+      key.appendChild(projectedKey);
+      top.appendChild(key);
+
+      card.appendChild(top);
+
+      const timeline = data.forecast.timeline || [];
+      if (timeline.length < 2) {
+        card.appendChild(
+          el(
+            "p",
+            "forecast-note",
+            data.mode === "live"
+              ? "Not enough snapshot history yet to plot a trend. Run record_snapshot (or python capacity_report.py --snapshot) on at least two different days, then check back."
+              : "No history available."
+          )
+        );
+        return;
+      }
+
+      const wrap = el("div", "chart-wrap");
+      wrap.appendChild(buildForecastChart(timeline));
+      card.appendChild(wrap);
+
+      if (data.forecast.assumption) {
+        card.appendChild(el("p", "forecast-note", "Assumption: " + data.forecast.assumption));
+      }
+    }
+
+    function buildForecastChart(timeline) {
+      const width = 1000;
+      const height = 260;
+      const padTop = 24;
+      const padBottom = 32;
+      const padX = 24;
+
+      const values = timeline.map((p) => p.total_bytes);
+      const maxVal = Math.max(...values) * 1.15;
+      const minVal = 0;
+
+      const xStep = (width - padX * 2) / (timeline.length - 1);
+      const xFor = (i) => padX + i * xStep;
+      const yFor = (v) =>
+        height - padBottom - ((v - minVal) / (maxVal - minVal || 1)) * (height - padTop - padBottom);
+
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("class", "forecast-chart");
+
+      // Gridlines (3 horizontal steps)
+      for (let g = 0; g <= 2; g++) {
+        const v = maxVal * (g / 2);
+        const y = yFor(v);
+        const line = document.createElementNS(svg.namespaceURI, "line");
+        line.setAttribute("x1", padX);
+        line.setAttribute("x2", width - padX);
+        line.setAttribute("y1", y);
+        line.setAttribute("y2", y);
+        line.setAttribute("stroke", "var(--gridline)");
+        line.setAttribute("stroke-width", "1");
+        svg.appendChild(line);
+      }
+
+      // Split into actual vs projected segments (the projected segment
+      // starts at the last actual point, so the line connects unbroken).
+      const lastActualIdx = timeline.findIndex((p) => p.projected) - 1;
+      const splitIdx = lastActualIdx >= 0 ? lastActualIdx : timeline.length - 1;
+
+      function pathFor(fromIdx, toIdx) {
+        let d = "";
+        for (let i = fromIdx; i <= toIdx; i++) {
+          const x = xFor(i);
+          const y = yFor(timeline[i].total_bytes);
+          d += (i === fromIdx ? "M" : "L") + x + " " + y + " ";
+        }
+        return d;
+      }
+
+      const actualPath = document.createElementNS(svg.namespaceURI, "path");
+      actualPath.setAttribute("d", pathFor(0, splitIdx));
+      actualPath.setAttribute("fill", "none");
+      actualPath.setAttribute("stroke", "var(--series-1)");
+      actualPath.setAttribute("stroke-width", "2");
+      actualPath.setAttribute("stroke-linejoin", "round");
+      actualPath.setAttribute("stroke-linecap", "round");
+      svg.appendChild(actualPath);
+
+      if (splitIdx < timeline.length - 1) {
+        const projectedPath = document.createElementNS(svg.namespaceURI, "path");
+        projectedPath.setAttribute("d", pathFor(splitIdx, timeline.length - 1));
+        projectedPath.setAttribute("fill", "none");
+        projectedPath.setAttribute("stroke", "var(--series-1)");
+        projectedPath.setAttribute("stroke-width", "2");
+        projectedPath.setAttribute("stroke-dasharray", "6 5");
+        projectedPath.setAttribute("stroke-linecap", "round");
+        svg.appendChild(projectedPath);
+      }
+
+      // Points, hit targets, and axis labels.
+      timeline.forEach((point, i) => {
+        const x = xFor(i);
+        const y = yFor(point.total_bytes);
+
+        const ring = document.createElementNS(svg.namespaceURI, "circle");
+        ring.setAttribute("cx", x);
+        ring.setAttribute("cy", y);
+        ring.setAttribute("r", 5);
+        ring.setAttribute("fill", "var(--series-1)");
+        ring.setAttribute("stroke", "var(--surface)");
+        ring.setAttribute("stroke-width", "2");
+        svg.appendChild(ring);
+
+        const hit = document.createElementNS(svg.namespaceURI, "circle");
+        hit.setAttribute("cx", x);
+        hit.setAttribute("cy", y);
+        hit.setAttribute("r", 16);
+        hit.setAttribute("fill", "transparent");
+        hit.style.cursor = "pointer";
+        hit.addEventListener("pointerenter", (e) => showTooltip(e, point));
+        hit.addEventListener("pointermove", (e) => showTooltip(e, point));
+        hit.addEventListener("pointerleave", hideTooltip);
+        svg.appendChild(hit);
+
+        const label = document.createElementNS(svg.namespaceURI, "text");
+        label.setAttribute("x", x);
+        label.setAttribute("y", height - 8);
+        label.setAttribute("text-anchor", "middle");
+        label.setAttribute("font-size", "11");
+        label.setAttribute("fill", "var(--text-muted)");
+        label.textContent = point.label;
+        svg.appendChild(label);
+
+        // Direct-label the two endpoints (last actual, final projected).
+        if (i === splitIdx || i === timeline.length - 1) {
+          const valueLabel = document.createElementNS(svg.namespaceURI, "text");
+          valueLabel.setAttribute("x", x);
+          valueLabel.setAttribute("y", y - 14);
+          valueLabel.setAttribute("text-anchor", "middle");
+          valueLabel.setAttribute("font-size", "12");
+          valueLabel.setAttribute("font-weight", "600");
+          valueLabel.setAttribute("fill", "var(--text-primary)");
+          valueLabel.textContent = formatBytes(point.total_bytes);
+          svg.appendChild(valueLabel);
+        }
+      });
+
+      return svg;
+    }
+
+    function showTooltip(evt, point) {
+      const tooltip = document.getElementById("tooltip");
+      tooltip.replaceChildren();
+      tooltip.appendChild(el("div", "tt-value", formatBytes(point.total_bytes)));
+      tooltip.appendChild(el("div", "tt-label", point.label + (point.projected ? " (projected)" : "")));
+      tooltip.style.left = evt.clientX + "px";
+      tooltip.style.top = evt.clientY + "px";
+      tooltip.hidden = false;
+    }
+
+    function hideTooltip() {
+      document.getElementById("tooltip").hidden = true;
+    }
+
+    function updateToggleButtons() {
+      document.getElementById("btn-live").classList.toggle("active", state.mode === "live");
+      document.getElementById("btn-demo").classList.toggle("active", state.mode === "demo");
+    }
+
+    async function loadAndRender() {
+      const main = document.getElementById("main");
+      main.classList.add("loading");
+      try {
+        const data = await fetchDashboard(state.mode);
+        renderKpis(data);
+        renderSavings(data);
+        renderBuckets(data);
+        renderForecast(data);
+        document.getElementById("updated-at").textContent =
+          "Updated " + new Date().toLocaleTimeString();
+      } catch (err) {
+        document.getElementById("main").replaceChildren(
+          el("p", "forecast-note", "Failed to load dashboard data: " + err.message)
+        );
+      } finally {
+        main.classList.remove("loading");
+      }
+    }
+
+    document.getElementById("mode-toggle").addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-mode]");
+      if (!btn || btn.dataset.mode === state.mode) return;
+      state.mode = btn.dataset.mode;
+      updateToggleButtons();
+      loadAndRender();
+    });
+
+    updateToggleButtons();
+    loadAndRender();
+  </script>
+</body>
+</html>

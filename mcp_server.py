@@ -21,19 +21,18 @@ are part of the interface, not just documentation for humans.
 from datetime import datetime, timezone
 from typing import Optional, TypedDict
 
-import boto3
 from mcp.server.fastmcp import FastMCP
 
 # We import (not reimplement) all capacity/cost logic from the existing
 # CLI tool, so the MCP server and `python capacity_report.py` always
 # agree on numbers.
 from capacity_report import (
-    ACCESS_KEY,
     DEFAULT_TIER,
-    MINIO_ENDPOINT,
     PRICING_PER_GB_MONTH,
-    SECRET_KEY,
     SNAPSHOT_LOG_PATH,
+    build_bucket_report,
+    build_savings_report,
+    connect_s3,
     estimate_monthly_cost,
     format_money,
     get_demo_buckets,
@@ -41,7 +40,6 @@ from capacity_report import (
     get_live_buckets,
     human_readable_size,
     read_snapshot_history,
-    suggest_tier,
     summarize_buckets,
 )
 from capacity_report import forecast_growth as _forecast_growth
@@ -53,33 +51,11 @@ from capacity_report import record_snapshot as _write_snapshot_rows
 mcp = FastMCP("storage-insights")
 
 
-def _connect():
-    """
-    Build a boto3 S3 client pointed at MinIO, using the same
-    endpoint/credential env vars (with the same local-dev defaults) as
-    capacity_report.py's main(). Shared by every tool below so connection
-    setup lives in exactly one place.
-    """
-    return boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=ACCESS_KEY,
-        aws_secret_access_key=SECRET_KEY,
-    )
-
-
 def _get_buckets(demo: bool):
     """Fetch bucket data -- demo (synthetic) or live (real MinIO) -- as a list of dicts."""
     if demo:
         return get_demo_buckets()
-    return get_live_buckets(_connect())
-
-
-def _days_since(last_modified) -> Optional[int]:
-    """Days between now and a bucket's last-modified timestamp, or None if unknown."""
-    if last_modified is None:
-        return None
-    return (datetime.now(timezone.utc) - last_modified).days
+    return get_live_buckets(connect_s3())
 
 
 class StorageSummary(TypedDict):
@@ -155,33 +131,6 @@ class BucketDetailsResult(TypedDict):
     buckets: list[BucketDetail]
 
 
-def _to_bucket_detail(bucket: dict) -> BucketDetail:
-    """
-    Build a BucketDetail from one of get_live_buckets()/get_demo_buckets()'s
-    raw bucket dicts, using capacity_report.py's own cost and tiering
-    logic (estimate_monthly_cost, suggest_tier) so these numbers always
-    match what the CLI would print.
-    """
-    total_bytes = bucket["total_bytes"]
-    days_since_last_access = _days_since(bucket["last_modified"])
-    monthly_cost = estimate_monthly_cost(total_bytes, PRICING_PER_GB_MONTH[DEFAULT_TIER])
-
-    return {
-        "name": bucket["name"],
-        "object_count": bucket["object_count"],
-        "total_bytes": total_bytes,
-        "total_size_human": human_readable_size(total_bytes),
-        "days_since_last_access": days_since_last_access,
-        "estimated_monthly_cost_usd": round(monthly_cost, 2),
-        "estimated_monthly_cost_display": format_money(monthly_cost),
-        "suggested_tier": (
-            suggest_tier(days_since_last_access)
-            if days_since_last_access is not None
-            else None
-        ),
-    }
-
-
 @mcp.tool()
 def get_bucket_details(
     bucket_name: Optional[str] = None, demo: bool = False
@@ -212,7 +161,7 @@ def get_bucket_details(
 
     return {
         "mode": "demo" if demo else "live",
-        "buckets": [_to_bucket_detail(b) for b in buckets],
+        "buckets": [build_bucket_report(b) for b in buckets],
     }
 
 
@@ -256,46 +205,11 @@ def find_savings(demo: bool = False) -> FindSavingsResult:
             reachable, e.g. for demonstrations.
     """
     buckets = _get_buckets(demo)
-
-    opportunities: list[SavingsOpportunity] = []
-    for bucket in buckets:
-        days_since_last_access = _days_since(bucket["last_modified"])
-        if days_since_last_access is None:
-            continue
-
-        suggested_tier = suggest_tier(days_since_last_access)
-        if suggested_tier is None:
-            continue
-
-        total_bytes = bucket["total_bytes"]
-        current_cost = estimate_monthly_cost(
-            total_bytes, PRICING_PER_GB_MONTH[DEFAULT_TIER]
-        )
-        suggested_cost = estimate_monthly_cost(
-            total_bytes, PRICING_PER_GB_MONTH[suggested_tier]
-        )
-        savings = current_cost - suggested_cost
-
-        opportunities.append(
-            {
-                "name": bucket["name"],
-                "days_since_last_access": days_since_last_access,
-                "current_tier": DEFAULT_TIER,
-                "current_monthly_cost_usd": round(current_cost, 2),
-                "suggested_tier": suggested_tier,
-                "suggested_monthly_cost_usd": round(suggested_cost, 2),
-                "monthly_savings_usd": round(savings, 2),
-            }
-        )
-
-    opportunities.sort(key=lambda o: o["monthly_savings_usd"], reverse=True)
-    total_savings = sum(o["monthly_savings_usd"] for o in opportunities)
+    report = build_savings_report(buckets)
 
     return {
         "mode": "demo" if demo else "live",
-        "opportunities": opportunities,
-        "total_monthly_savings_usd": round(total_savings, 2),
-        "total_monthly_savings_display": format_money(total_savings),
+        **report,
     }
 
 

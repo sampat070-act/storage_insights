@@ -80,6 +80,22 @@ SNAPSHOT_LOG_PATH = os.environ.get(
 SNAPSHOT_CSV_FIELDS = ["timestamp_utc", "mode", "bucket_name", "object_count", "total_bytes"]
 
 
+def connect_s3():
+    """
+    Build a boto3 S3 client pointed at MinIO, using the endpoint/credential
+    env vars above (with their local-dev defaults). Every interface --
+    the CLI, the MCP server, the web dashboard -- calls this instead of
+    each constructing its own boto3.client(...), so connection setup
+    lives in exactly one place.
+    """
+    return boto3.client(
+        "s3",
+        endpoint_url=MINIO_ENDPOINT,
+        aws_access_key_id=ACCESS_KEY,
+        aws_secret_access_key=SECRET_KEY,
+    )
+
+
 def suggest_tier(days_since_access):
     """
     Suggest a cheaper storage tier based on how long it's been since a
@@ -298,6 +314,97 @@ def summarize_buckets(buckets):
     return {
         "total_bytes": sum(b["total_bytes"] for b in buckets),
         "total_objects": sum(b["object_count"] for b in buckets),
+    }
+
+
+def days_since(last_modified):
+    """
+    Days between now and a bucket's last-modified timestamp (used as a
+    proxy for "last accessed"), or None if the bucket has no objects and
+    therefore no last-modified time.
+    """
+    if last_modified is None:
+        return None
+    return (datetime.now(timezone.utc) - last_modified).days
+
+
+def build_bucket_report(bucket):
+    """
+    Build a full per-bucket report -- size, cost, age, and suggested
+    tier -- from one of get_live_buckets()/get_demo_buckets()'s raw
+    bucket dicts. Combines suggest_tier(), estimate_monthly_cost(), and
+    human_readable_size() into one bucket's story in exactly one place;
+    every interface that needs per-bucket detail (MCP server, web
+    dashboard) calls this instead of recomputing it.
+    """
+    total_bytes = bucket["total_bytes"]
+    bucket_days_since_access = days_since(bucket["last_modified"])
+    monthly_cost = estimate_monthly_cost(total_bytes, PRICING_PER_GB_MONTH[DEFAULT_TIER])
+
+    return {
+        "name": bucket["name"],
+        "object_count": bucket["object_count"],
+        "total_bytes": total_bytes,
+        "total_size_human": human_readable_size(total_bytes),
+        "days_since_last_access": bucket_days_since_access,
+        "estimated_monthly_cost_usd": round(monthly_cost, 2),
+        "estimated_monthly_cost_display": format_money(monthly_cost),
+        "suggested_tier": (
+            suggest_tier(bucket_days_since_access)
+            if bucket_days_since_access is not None
+            else None
+        ),
+    }
+
+
+def build_savings_report(buckets):
+    """
+    Find buckets that are mis-tiered for how long it's been since they
+    were last accessed, and quantify the monthly savings from moving
+    each one to suggest_tier()'s recommended colder tier. Buckets
+    already in the right tier (suggest_tier() returns None) are left
+    out of the results.
+
+    Single place this analysis happens -- the MCP server's find_savings
+    tool and the web dashboard both call this instead of each running
+    their own copy of the loop.
+    """
+    opportunities = []
+    for bucket in buckets:
+        bucket_days_since_access = days_since(bucket["last_modified"])
+        if bucket_days_since_access is None:
+            continue
+
+        suggested_tier = suggest_tier(bucket_days_since_access)
+        if suggested_tier is None:
+            continue
+
+        total_bytes = bucket["total_bytes"]
+        current_cost = estimate_monthly_cost(total_bytes, PRICING_PER_GB_MONTH[DEFAULT_TIER])
+        suggested_cost = estimate_monthly_cost(
+            total_bytes, PRICING_PER_GB_MONTH[suggested_tier]
+        )
+        savings = current_cost - suggested_cost
+
+        opportunities.append(
+            {
+                "name": bucket["name"],
+                "days_since_last_access": bucket_days_since_access,
+                "current_tier": DEFAULT_TIER,
+                "current_monthly_cost_usd": round(current_cost, 2),
+                "suggested_tier": suggested_tier,
+                "suggested_monthly_cost_usd": round(suggested_cost, 2),
+                "monthly_savings_usd": round(savings, 2),
+            }
+        )
+
+    opportunities.sort(key=lambda o: o["monthly_savings_usd"], reverse=True)
+    total_savings = sum(o["monthly_savings_usd"] for o in opportunities)
+
+    return {
+        "opportunities": opportunities,
+        "total_monthly_savings_usd": round(total_savings, 2),
+        "total_monthly_savings_display": format_money(total_savings),
     }
 
 
@@ -603,16 +710,7 @@ def main():
     if args.demo:
         buckets = get_demo_buckets()
     else:
-        # boto3.client("s3", ...) creates an object we can use to make S3
-        # API calls. Passing endpoint_url points it at our local MinIO
-        # server instead of the real AWS S3 service.
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=MINIO_ENDPOINT,
-            aws_access_key_id=ACCESS_KEY,
-            aws_secret_access_key=SECRET_KEY,
-        )
-        buckets = get_live_buckets(s3)
+        buckets = get_live_buckets(connect_s3())
 
     if args.snapshot:
         mode = "demo" if args.demo else "live"
