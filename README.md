@@ -4,7 +4,9 @@ An MCP-powered storage analytics tool that surfaces capacity, cost, mis-tiering 
 
 *Built by a storage infrastructure engineer with 15 years across enterprise SAN, NAS, and software-defined object platforms — exploring what AI-native infrastructure tooling looks like.*
 
-<!-- TODO: add 30-second demo GIF here -->
+![Demo: storage_insights walking through cost, savings, and a 6-month forecast](demo.gif)
+
+*Regenerate this GIF any time with `vhs demo.tape` (requires [vhs](https://github.com/charmbracelet/vhs)); `demo.py` drives it and calls the exact same functions the MCP tools use.*
 
 ## Why this matters
 
