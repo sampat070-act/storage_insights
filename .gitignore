@@ -11,3 +11,5 @@ snapshots.csv
 
 # Output log from the daily snapshot job (launchd LaunchAgent).
 cron_snapshot.log
+.DS_Store
+cron_snapshot.log

@@ -1,0 +1,24 @@
+
+Tab 1 — Claude Code:
+
+cd /Users/sampatkumar/projects/storage_insights
+source venv/bin/activate
+clear
+claude
+
+Tab 2 — dashboard:
+cd /Users/sampatkumar/projects/storage_insights
+source venv/bin/activate
+python dashboard.py
+
+
+
+What's my total storage and what's it costing me, for the demo buckets?
+
+Where am I wasting money in the demo buckets?
+
+What will my capacity look like in six months, for the demo buckets?
+
+
+
+
